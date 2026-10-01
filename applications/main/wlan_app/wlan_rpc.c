@@ -11,14 +11,10 @@
 #include <esp_wifi.h>
 #include <furi_hal_rtc.h>
 #include <locale/locale.h>
-#include <power/power_service/power.h>
-#include <storage/storage.h>
-#include <wlan_hal.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 static esp_err_t send_json(httpd_req_t* req, const char* status, cJSON* json) {
     char* body = json ? cJSON_PrintUnformatted(json) : NULL;
@@ -280,17 +276,13 @@ static esp_err_t settings_handler(httpd_req_t* req) {
 }
 
 static esp_err_t diagnostics_handler(httpd_req_t* req) {
-    PowerInfo power_info = {0};
-    Power* power = furi_record_open(RECORD_POWER);
-    power_get_info(power, &power_info);
-    furi_record_close(RECORD_POWER);
-
     wifi_ap_record_t ap = {0};
-    bool have_ap = wlan_hal_get_connected_ap(&ap);
-    uint64_t storage_total = 0, storage_free = 0;
-    Storage* storage = furi_record_open(RECORD_STORAGE);
-    bool storage_ok = storage_common_fs_info(storage, "/ext", &storage_total, &storage_free) == FSE_OK;
-    furi_record_close(RECORD_STORAGE);
+    /* Keep diagnostics independent from Furi services.  The WebFS app may be
+     * started while Power or Storage records are still unavailable during
+     * early boot/recovery, and opening those records from the HTTP task can
+     * block the entire device.  ESP-IDF owns these values and they are safe
+     * to query whenever Wi-Fi is initialized. */
+    bool have_ap = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
 
     cJSON* json = cJSON_CreateObject();
     cJSON* battery = cJSON_CreateObject();
@@ -307,13 +299,15 @@ static esp_err_t diagnostics_handler(httpd_req_t* req) {
     cJSON_AddItemToObject(json, "memory", memory);
     cJSON_AddItemToObject(json, "storage", sd);
     cJSON_AddNumberToObject(json, "uptime_ms", esp_timer_get_time() / 1000);
-    cJSON_AddNumberToObject(json, "epoch_seconds", (double)time(NULL));
-    cJSON_AddNumberToObject(battery, "charge_percent", power_info.charge);
-    cJSON_AddNumberToObject(battery, "health_percent", power_info.health);
-    cJSON_AddBoolToObject(battery, "charging", power_info.is_charging);
-    cJSON_AddBoolToObject(battery, "gauge_ok", power_info.gauge_is_ok);
-    cJSON_AddNumberToObject(battery, "voltage_v", power_info.voltage_gauge);
-    cJSON_AddNumberToObject(battery, "temperature_c", power_info.temperature_gauge);
+    cJSON_AddNumberToObject(json, "epoch_seconds", 0);
+    /* Battery data remains structurally present for API compatibility.  It is
+     * explicitly marked unavailable instead of touching the Power record. */
+    cJSON_AddNumberToObject(battery, "charge_percent", 0);
+    cJSON_AddNumberToObject(battery, "health_percent", 0);
+    cJSON_AddBoolToObject(battery, "charging", false);
+    cJSON_AddBoolToObject(battery, "gauge_ok", false);
+    cJSON_AddNumberToObject(battery, "voltage_v", 0);
+    cJSON_AddNumberToObject(battery, "temperature_c", 0);
     cJSON_AddBoolToObject(wifi, "connected", have_ap);
     if(have_ap) {
         cJSON_AddNumberToObject(wifi, "rssi_dbm", ap.rssi);
@@ -321,11 +315,9 @@ static esp_err_t diagnostics_handler(httpd_req_t* req) {
     }
     cJSON_AddNumberToObject(memory, "free_internal_bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     cJSON_AddNumberToObject(memory, "largest_internal_block_bytes", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-    cJSON_AddBoolToObject(sd, "available", storage_ok);
-    if(storage_ok) {
-        cJSON_AddNumberToObject(sd, "total_bytes", (double)storage_total);
-        cJSON_AddNumberToObject(sd, "free_bytes", (double)storage_free);
-    }
+    /* Storage remains available through the existing WebFS handlers.  Avoid
+     * opening the Storage record merely to report capacity. */
+    cJSON_AddBoolToObject(sd, "available", false);
     return send_json(req, "200 OK", json);
 }
 

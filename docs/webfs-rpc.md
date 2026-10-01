@@ -17,8 +17,30 @@ GET /api/diagnostics
 ```
 
 `settings` reports locale, clock/date format and timezone state without allowing
-remote changes. `diagnostics` reports battery, current WiFi link, internal heap,
-SD-card capacity and timestamps.
+remote changes. `diagnostics` reports the current WiFi link, internal heap and
+uptime. Battery and storage fields remain present for gateway compatibility but
+are marked unavailable; the HTTP task deliberately does not open Furi Power or
+Storage records, which keeps WebFS safe during boot and recovery.
+
+## Build and flash on Windows
+
+Build and flash with the repository helper so ESP-IDF uses the partition table
+generated for this Momentum port:
+
+```powershell
+.\tools\flash_t_embed_rpc.ps1 -Port COM3
+```
+
+The Momentum layout places `ota_data_initial.bin` at `0x10000` and the app at
+`0x20000`. Do not reuse the older Sor3nt commands that place the app at
+`0x10000` and OTA data at `0xbf0000`: esptool can successfully write and verify
+that incompatible layout, but the T-Embed will boot to a black screen.
+
+To capture an early boot failure after flashing:
+
+```powershell
+.\tools\flash_t_embed_rpc.ps1 -Port COM3 -Monitor
+```
 
 ## Receive jobs
 
