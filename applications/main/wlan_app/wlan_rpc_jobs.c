@@ -22,6 +22,7 @@ static uint32_t s_next_id;
 static bool s_stopping;
 static bool s_cancel_requested;
 static bool s_capturing;
+static bool s_initialized;
 static QueueHandle_t s_requests;
 static SemaphoreHandle_t s_exited;
 
@@ -96,29 +97,44 @@ static void worker(void* context) {
 }
 
 bool wlan_rpc_jobs_init(void) {
-    if(s_requests) return false;
+    if(s_initialized) return false;
     portENTER_CRITICAL(&s_lock);
     memset(&s_job, 0, sizeof(s_job));
     s_stopping = false;
     s_cancel_requested = false;
     s_capturing = false;
+    s_initialized = true;
     portEXIT_CRITICAL(&s_lock);
-    s_requests = xQueueCreate(1, sizeof(uint8_t));
-    s_exited = xSemaphoreCreateBinary();
-    if(s_requests && s_exited &&
-       xTaskCreate(worker, "wlan_rpc_rx", 4096, NULL, 5, NULL) == pdPASS) return true;
-    if(s_requests) vQueueDelete(s_requests);
-    if(s_exited) vSemaphoreDelete(s_exited);
+    /* Allocate the 4 KiB worker stack only when the first receive job starts.
+     * qFlipper and WebFS can therefore coexist while the radio is idle. */
+    return true;
+}
+
+static bool ensure_worker(void) {
+    if(s_requests) return true;
+    QueueHandle_t requests = xQueueCreate(1, sizeof(uint8_t));
+    SemaphoreHandle_t exited = xSemaphoreCreateBinary();
+    if(!requests || !exited) {
+        if(requests) vQueueDelete(requests);
+        if(exited) vSemaphoreDelete(exited);
+        return false;
+    }
+    s_requests = requests;
+    s_exited = exited;
+    if(xTaskCreate(worker, "wlan_rpc_rx", 4096, NULL, 5, NULL) == pdPASS) return true;
     s_requests = NULL;
     s_exited = NULL;
+    vQueueDelete(requests);
+    vSemaphoreDelete(exited);
     return false;
 }
 
 void wlan_rpc_jobs_stop(void) {
-    if(!s_requests) return;
     portENTER_CRITICAL(&s_lock);
     s_stopping = true;
+    s_initialized = false;
     portEXIT_CRITICAL(&s_lock);
+    if(!s_requests) return;
     uint8_t request = 0;
     xQueueSend(s_requests, &request, portMAX_DELAY);
     xSemaphoreTake(s_exited, portMAX_DELAY);
@@ -129,8 +145,9 @@ void wlan_rpc_jobs_stop(void) {
 }
 
 uint32_t wlan_rpc_jobs_start(uint32_t frequency_hz, uint32_t duration_ms) {
-    if(!s_requests || !wlan_rpc_jobs_frequency_valid(frequency_hz) ||
+    if(!s_initialized || !wlan_rpc_jobs_frequency_valid(frequency_hz) ||
        duration_ms < 100 || duration_ms > WLAN_RPC_MAX_DURATION_MS) return 0;
+    if(!ensure_worker()) return 0;
     portENTER_CRITICAL(&s_lock);
     if(s_job.busy || s_stopping || s_next_id == UINT32_MAX) {
         portEXIT_CRITICAL(&s_lock);
