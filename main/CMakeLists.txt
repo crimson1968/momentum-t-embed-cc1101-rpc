@@ -54,7 +54,7 @@ endif()
 idf_component_register(
     SRCS "app_main.c" "${ESP32_FAM_REGISTRY_C}"
     INCLUDE_DIRS "."
-    REQUIRES furi furi_hal input notification gui locale storage loader desktop btshim wifi app_update fw_ota libsmb2 momentum toolbox
+    REQUIRES furi furi_hal input notification gui locale storage loader desktop btshim wifi app_update fw_ota libsmb2 momentum toolbox json esp_app_format
     LDFRAGMENTS "main.lf"
     # The welcome slideshow ships inside the firmware rather than as an SD
     # asset: a fresh card should show the intro without the user having to
@@ -98,6 +98,8 @@ if(NOT CMAKE_SCRIPT_MODE_FILE)
         idf::toolbox
         idf::esp_http_client
         idf::esp_http_server
+        idf::json
+        idf::esp_app_format
         idf::lfrfid
         idf::mjs
         idf::momentum
