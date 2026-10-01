@@ -5,13 +5,20 @@
 #include <boards/board.h>
 #include <cJSON.h>
 #include <esp_app_desc.h>
+#include <esp_heap_caps.h>
 #include <esp_netif.h>
 #include <esp_timer.h>
 #include <esp_wifi.h>
+#include <furi_hal_rtc.h>
+#include <locale/locale.h>
+#include <power/power_service/power.h>
+#include <storage/storage.h>
+#include <wlan_hal.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static esp_err_t send_json(httpd_req_t* req, const char* status, cJSON* json) {
     char* body = json ? cJSON_PrintUnformatted(json) : NULL;
@@ -51,7 +58,7 @@ static esp_err_t status_handler(httpd_req_t* req) {
               cJSON_AddStringToObject(json, "board_id", BOARD_ID) &&
               cJSON_AddStringToObject(json, "firmware", app->version) &&
               cJSON_AddStringToObject(json, "idf_version", app->idf_ver) &&
-              cJSON_AddStringToObject(json, "api_version", "1.0") &&
+              cJSON_AddStringToObject(json, "api_version", "1.1") &&
               cJSON_AddNumberToObject(json, "uptime_ms", esp_timer_get_time() / 1000) &&
               cJSON_AddStringToObject(json, "network_mode", ap ? "ap" : "sta") &&
               cJSON_AddBoolToObject(json, "network_up", up && info.ip.addr != 0) &&
@@ -66,8 +73,10 @@ static esp_err_t status_handler(httpd_req_t* req) {
 static esp_err_t capabilities_handler(httpd_req_t* req) {
     cJSON* json = cJSON_CreateObject();
     if(!json) return send_json(req, "200 OK", NULL);
-    bool ok = cJSON_AddStringToObject(json, "api_version", "1.0") &&
-              cJSON_AddBoolToObject(json, "read_only", true) &&
+    bool ok = cJSON_AddStringToObject(json, "api_version", "1.1") &&
+              cJSON_AddBoolToObject(json, "read_only", false) &&
+              cJSON_AddBoolToObject(json, "radio_read_only", true) &&
+              cJSON_AddBoolToObject(json, "storage_write", true) &&
               cJSON_AddBoolToObject(json, "subghz_rx", wlan_rpc_jobs_supported()) &&
               cJSON_AddBoolToObject(json, "subghz_tx", false) &&
               cJSON_AddBoolToObject(json, "protocol_decode", false) &&
@@ -78,7 +87,13 @@ static esp_err_t capabilities_handler(httpd_req_t* req) {
               cJSON_AddRawToObject(json, "frequency_ranges_hz",
                   "[[281000000,361000000],[378000000,481000000],[749000000,962000000]]") &&
               cJSON_AddStringToObject(json, "result", "pulse_statistics_and_rssi") &&
-              cJSON_AddStringToObject(json, "jobs_route", "/api/jobs?id=<id>") &&
+              cJSON_AddStringToObject(json, "jobs_route", "/api/jobs[?id=<id>]") &&
+              cJSON_AddStringToObject(json, "job_cancel_route", "/api/jobs/cancel?id=<id>") &&
+              cJSON_AddStringToObject(json, "settings_route", "/api/settings") &&
+              cJSON_AddStringToObject(json, "diagnostics_route", "/api/diagnostics") &&
+              cJSON_AddStringToObject(json, "storage_list_route", "/api/storage/list?path=/ext") &&
+              cJSON_AddStringToObject(json, "storage_download_route", "/api/storage/download?path=/ext/<file>") &&
+              cJSON_AddStringToObject(json, "storage_upload_route", "/api/storage/upload?path=/ext/<file>") &&
               cJSON_AddNumberToObject(json, "min_duration_ms", 100) &&
               cJSON_AddNumberToObject(json, "max_duration_ms", WLAN_RPC_MAX_DURATION_MS) &&
               cJSON_AddNumberToObject(json, "retained_jobs", 1);
@@ -90,6 +105,50 @@ static bool integer(const cJSON* value, double min, double max) {
     return cJSON_IsNumber(value) && isfinite(value->valuedouble) &&
            value->valuedouble >= min && value->valuedouble <= max &&
            floor(value->valuedouble) == value->valuedouble;
+}
+
+static bool query_id(httpd_req_t* req, uint32_t* id, bool required) {
+    size_t qlen = httpd_req_get_url_query_len(req);
+    if(qlen == 0) return !required;
+    if(qlen >= 64) return false;
+    char query[64];
+    char value[24];
+    if(httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+       httpd_query_key_value(query, "id", value, sizeof(value)) != ESP_OK || value[0] == 0) {
+        return false;
+    }
+    uint32_t parsed = 0;
+    for(const char* p = value; *p; p++) {
+        if(*p < '0' || *p > '9' || parsed > (UINT32_MAX - (uint32_t)(*p - '0')) / 10) {
+            return false;
+        }
+        parsed = parsed * 10 + (uint32_t)(*p - '0');
+    }
+    if(parsed == 0) return false;
+    *id = parsed;
+    return true;
+}
+
+static cJSON* job_json(const WlanRpcJob* job) {
+    cJSON* json = cJSON_CreateObject();
+    if(!json) return NULL;
+    bool ok = cJSON_AddNumberToObject(json, "id", job->id) &&
+              cJSON_AddStringToObject(json, "state", job->busy ? "running" :
+                                      (job->cancelled ? "cancelled" : "done")) &&
+              cJSON_AddNumberToObject(json, "frequency_hz", job->frequency_hz) &&
+              cJSON_AddNumberToObject(json, "actual_frequency_hz", job->actual_frequency_hz) &&
+              cJSON_AddNumberToObject(json, "duration_ms", job->duration_ms) &&
+              cJSON_AddNumberToObject(json, "elapsed_ms", job->elapsed_ms) &&
+              cJSON_AddNumberToObject(json, "pulses", job->pulses) &&
+              cJSON_AddNumberToObject(json, "high_pulses", job->high_pulses) &&
+              cJSON_AddNumberToObject(json, "rssi_samples", job->rssi_samples) &&
+              (job->rssi_samples ? cJSON_AddNumberToObject(json, "peak_rssi_dbm", job->peak_rssi_dbm) :
+                                   cJSON_AddNullToObject(json, "peak_rssi_dbm"));
+    if(!ok) {
+        cJSON_Delete(json);
+        return NULL;
+    }
+    return json;
 }
 
 static esp_err_t rx_handler(httpd_req_t* req) {
@@ -164,35 +223,109 @@ static esp_err_t rx_handler(httpd_req_t* req) {
 }
 
 static esp_err_t job_handler(httpd_req_t* req) {
-    char query[48];
-    if(httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
-       strncmp(query, "id=", 3) != 0 || query[3] == 0) {
-        return error(req, "400 Bad Request", "use_jobs_id_positive_integer");
-    }
     uint32_t id = 0;
-    for(const char* p = query + 3; *p; p++) {
-        if(*p < '0' || *p > '9' || id > (UINT32_MAX - (uint32_t)(*p - '0')) / 10) {
-            return error(req, "400 Bad Request", "invalid_id");
-        }
-        id = id * 10 + (uint32_t)(*p - '0');
-    }
+    if(!query_id(req, &id, false)) return error(req, "400 Bad Request", "invalid_id");
     WlanRpcJob job = wlan_rpc_jobs_snapshot();
-    if(id == 0 || id != job.id) return error(req, "404 Not Found", "job_not_retained");
+    if(id) {
+        if(id != job.id) return error(req, "404 Not Found", "job_not_retained");
+        return send_json(req, "200 OK", job_json(&job));
+    }
+    cJSON* root = cJSON_CreateObject();
+    cJSON* jobs = cJSON_CreateArray();
+    if(!root || !jobs || !cJSON_AddItemToObject(root, "jobs", jobs)) {
+        cJSON_Delete(root);
+        cJSON_Delete(jobs);
+        return send_json(req, "200 OK", NULL);
+    }
+    if(job.id) {
+        cJSON* item = job_json(&job);
+        if(!item || !cJSON_AddItemToArray(jobs, item)) {
+            cJSON_Delete(item);
+            cJSON_Delete(root);
+            return send_json(req, "200 OK", NULL);
+        }
+    }
+    cJSON_AddNumberToObject(root, "retained", job.id ? 1 : 0);
+    return send_json(req, "200 OK", root);
+}
+
+static esp_err_t job_cancel_handler(httpd_req_t* req) {
+    uint32_t id = 0;
+    if(!query_id(req, &id, true)) return error(req, "400 Bad Request", "invalid_id");
+    if(!wlan_rpc_jobs_cancel(id)) return error(req, "409 Conflict", "job_not_running");
     cJSON* json = cJSON_CreateObject();
-    if(!json) return send_json(req, "200 OK", NULL);
-    bool ok = cJSON_AddNumberToObject(json, "id", job.id) &&
-              cJSON_AddStringToObject(json, "state", job.busy ? "running" :
-                                      (job.cancelled ? "cancelled" : "done")) &&
-              cJSON_AddNumberToObject(json, "frequency_hz", job.frequency_hz) &&
-              cJSON_AddNumberToObject(json, "actual_frequency_hz", job.actual_frequency_hz) &&
-              cJSON_AddNumberToObject(json, "duration_ms", job.duration_ms) &&
-              cJSON_AddNumberToObject(json, "elapsed_ms", job.elapsed_ms) &&
-              cJSON_AddNumberToObject(json, "pulses", job.pulses) &&
-              cJSON_AddNumberToObject(json, "high_pulses", job.high_pulses) &&
-              cJSON_AddNumberToObject(json, "rssi_samples", job.rssi_samples) &&
-              (job.rssi_samples ? cJSON_AddNumberToObject(json, "peak_rssi_dbm", job.peak_rssi_dbm) :
-                                  cJSON_AddNullToObject(json, "peak_rssi_dbm"));
-    if(!ok) { cJSON_Delete(json); json = NULL; }
+    if(json) {
+        cJSON_AddNumberToObject(json, "id", id);
+        cJSON_AddStringToObject(json, "state", "cancelling");
+    }
+    return send_json(req, "202 Accepted", json);
+}
+
+static esp_err_t settings_handler(httpd_req_t* req) {
+    const char* units = locale_get_measurement_unit() == LocaleMeasurementUnitsMetric ? "metric" : "imperial";
+    const char* clock = locale_get_time_format() == LocaleTimeFormat24h ? "24h" : "12h";
+    LocaleDateFormat date = locale_get_date_format();
+    const char* date_text = date == LocaleDateFormatDMY ? "dmy" :
+                            date == LocaleDateFormatMDY ? "mdy" : "ymd";
+    cJSON* json = cJSON_CreateObject();
+    if(json) {
+        cJSON_AddStringToObject(json, "measurement_units", units);
+        cJSON_AddStringToObject(json, "time_format", clock);
+        cJSON_AddStringToObject(json, "date_format", date_text);
+        cJSON_AddBoolToObject(json, "timezone_automatic", furi_hal_rtc_get_timezone_auto());
+        cJSON_AddNumberToObject(json, "timezone_offset_minutes", furi_hal_rtc_get_timezone_offset_minutes());
+        cJSON_AddBoolToObject(json, "writable", false);
+    }
+    return send_json(req, "200 OK", json);
+}
+
+static esp_err_t diagnostics_handler(httpd_req_t* req) {
+    PowerInfo power_info = {0};
+    Power* power = furi_record_open(RECORD_POWER);
+    power_get_info(power, &power_info);
+    furi_record_close(RECORD_POWER);
+
+    wifi_ap_record_t ap = {0};
+    bool have_ap = wlan_hal_get_connected_ap(&ap);
+    uint64_t storage_total = 0, storage_free = 0;
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    bool storage_ok = storage_common_fs_info(storage, "/ext", &storage_total, &storage_free) == FSE_OK;
+    furi_record_close(RECORD_STORAGE);
+
+    cJSON* json = cJSON_CreateObject();
+    cJSON* battery = cJSON_CreateObject();
+    cJSON* wifi = cJSON_CreateObject();
+    cJSON* memory = cJSON_CreateObject();
+    cJSON* sd = cJSON_CreateObject();
+    if(!json || !battery || !wifi || !memory || !sd) {
+        cJSON_Delete(json); cJSON_Delete(battery); cJSON_Delete(wifi);
+        cJSON_Delete(memory); cJSON_Delete(sd);
+        return send_json(req, "200 OK", NULL);
+    }
+    cJSON_AddItemToObject(json, "battery", battery);
+    cJSON_AddItemToObject(json, "wifi", wifi);
+    cJSON_AddItemToObject(json, "memory", memory);
+    cJSON_AddItemToObject(json, "storage", sd);
+    cJSON_AddNumberToObject(json, "uptime_ms", esp_timer_get_time() / 1000);
+    cJSON_AddNumberToObject(json, "epoch_seconds", (double)time(NULL));
+    cJSON_AddNumberToObject(battery, "charge_percent", power_info.charge);
+    cJSON_AddNumberToObject(battery, "health_percent", power_info.health);
+    cJSON_AddBoolToObject(battery, "charging", power_info.is_charging);
+    cJSON_AddBoolToObject(battery, "gauge_ok", power_info.gauge_is_ok);
+    cJSON_AddNumberToObject(battery, "voltage_v", power_info.voltage_gauge);
+    cJSON_AddNumberToObject(battery, "temperature_c", power_info.temperature_gauge);
+    cJSON_AddBoolToObject(wifi, "connected", have_ap);
+    if(have_ap) {
+        cJSON_AddNumberToObject(wifi, "rssi_dbm", ap.rssi);
+        cJSON_AddNumberToObject(wifi, "channel", ap.primary);
+    }
+    cJSON_AddNumberToObject(memory, "free_internal_bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    cJSON_AddNumberToObject(memory, "largest_internal_block_bytes", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    cJSON_AddBoolToObject(sd, "available", storage_ok);
+    if(storage_ok) {
+        cJSON_AddNumberToObject(sd, "total_bytes", (double)storage_total);
+        cJSON_AddNumberToObject(sd, "free_bytes", (double)storage_free);
+    }
     return send_json(req, "200 OK", json);
 }
 
@@ -202,6 +335,9 @@ esp_err_t wlan_rpc_register(httpd_handle_t server) {
         {.uri = "/api/capabilities", .method = HTTP_GET, .handler = capabilities_handler},
         {.uri = "/api/subghz/rx", .method = HTTP_POST, .handler = rx_handler},
         {.uri = "/api/jobs", .method = HTTP_GET, .handler = job_handler},
+        {.uri = "/api/jobs/cancel", .method = HTTP_POST, .handler = job_cancel_handler},
+        {.uri = "/api/settings", .method = HTTP_GET, .handler = settings_handler},
+        {.uri = "/api/diagnostics", .method = HTTP_GET, .handler = diagnostics_handler},
     };
     if(!wlan_rpc_jobs_init()) return ESP_ERR_NO_MEM;
     for(size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {

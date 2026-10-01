@@ -26,4 +26,6 @@ bool wlan_rpc_jobs_supported(void);
 bool wlan_rpc_jobs_frequency_valid(uint32_t frequency_hz);
 /* HTTP handlers are serialized by esp_http_server. Returns 0 when busy/stopped. */
 uint32_t wlan_rpc_jobs_start(uint32_t frequency_hz, uint32_t duration_ms);
+/* Cancels the active job only when its id matches. The worker remains usable. */
+bool wlan_rpc_jobs_cancel(uint32_t id);
 WlanRpcJob wlan_rpc_jobs_snapshot(void);

@@ -526,7 +526,7 @@ static bool start_http(void) {
     /* 6144 stack: the handlers use ~2 KB of local buffers; 4096 overflows the
      * httpd task and the request hangs. */
     config.stack_size = 6144;
-    config.max_uri_handlers = 18;
+    config.max_uri_handlers = 24;
     /* Safe mode's captive-portal popup makes several apps probe at once the
      * moment a phone/PC joins (same effect noted in wlan_evil_portal.c) --
      * a couple of extra sockets over the plain-webfs default avoids one
@@ -578,6 +578,11 @@ static bool start_http(void) {
         {.uri = "/api/list", .method = HTTP_GET, .handler = handler_list},
         {.uri = "/api/download", .method = HTTP_GET, .handler = handler_download},
         {.uri = "/api/upload", .method = HTTP_POST, .handler = handler_upload},
+        /* Stable RPC names; implementations and /ext confinement stay shared
+         * with the browser-facing WebFS endpoints above. */
+        {.uri = "/api/storage/list", .method = HTTP_GET, .handler = handler_list},
+        {.uri = "/api/storage/download", .method = HTTP_GET, .handler = handler_download},
+        {.uri = "/api/storage/upload", .method = HTTP_POST, .handler = handler_upload},
         {.uri = "/api/rename", .method = HTTP_POST, .handler = handler_rename},
         {.uri = "/api/delete", .method = HTTP_POST, .handler = handler_delete},
         {.uri = "/api/mkdir", .method = HTTP_POST, .handler = handler_mkdir},

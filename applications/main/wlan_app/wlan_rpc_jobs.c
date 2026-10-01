@@ -20,6 +20,7 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static WlanRpcJob s_job;
 static uint32_t s_next_id;
 static bool s_stopping;
+static bool s_cancel_requested;
 static bool s_capturing;
 static QueueHandle_t s_requests;
 static SemaphoreHandle_t s_exited;
@@ -66,7 +67,7 @@ static void worker(void* context) {
         for(;;) {
             uint32_t elapsed = (uint32_t)((esp_timer_get_time() - started) / 1000);
             portENTER_CRITICAL(&s_lock);
-            bool stop = s_stopping;
+            bool stop = s_stopping || s_cancel_requested;
             s_job.elapsed_ms = elapsed;
             portEXIT_CRITICAL(&s_lock);
             if(stop || elapsed >= job.duration_ms) break;
@@ -85,8 +86,9 @@ static void worker(void* context) {
         subghz_devices_stop_async_rx(device);
         subghz_devices_sleep(device);
         portENTER_CRITICAL(&s_lock);
-        s_job.cancelled = s_stopping;
+        s_job.cancelled = s_stopping || s_cancel_requested;
         s_job.busy = false; /* Hardware is idle before another request can start. */
+        s_cancel_requested = false;
         portEXIT_CRITICAL(&s_lock);
     }
     xSemaphoreGive(s_exited);
@@ -98,6 +100,7 @@ bool wlan_rpc_jobs_init(void) {
     portENTER_CRITICAL(&s_lock);
     memset(&s_job, 0, sizeof(s_job));
     s_stopping = false;
+    s_cancel_requested = false;
     s_capturing = false;
     portEXIT_CRITICAL(&s_lock);
     s_requests = xQueueCreate(1, sizeof(uint8_t));
@@ -139,6 +142,7 @@ uint32_t wlan_rpc_jobs_start(uint32_t frequency_hz, uint32_t duration_ms) {
         .duration_ms = duration_ms,
         .busy = true,
     };
+    s_cancel_requested = false;
     uint32_t id = s_job.id;
     portEXIT_CRITICAL(&s_lock);
     uint8_t request = 1;
@@ -151,6 +155,15 @@ uint32_t wlan_rpc_jobs_start(uint32_t frequency_hz, uint32_t duration_ms) {
         return 0;
     }
     return id;
+}
+
+bool wlan_rpc_jobs_cancel(uint32_t id) {
+    if(!s_requests || id == 0) return false;
+    portENTER_CRITICAL(&s_lock);
+    bool accepted = s_job.busy && s_job.id == id && !s_stopping;
+    if(accepted) s_cancel_requested = true;
+    portEXIT_CRITICAL(&s_lock);
+    return accepted;
 }
 
 WlanRpcJob wlan_rpc_jobs_snapshot(void) {
