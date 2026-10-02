@@ -472,9 +472,11 @@ static void power_auto_poweroff_timer_callback(void* context) {
     furi_assert(context);
     Power* power = context;
 
-    //Dont poweroff device if charger connected
-    if(furi_hal_power_is_charging()) {
-        FURI_LOG_D(TAG, "We dont auto_power_off until battery is charging");
+    // Keep the device available whenever USB supplies it. Charging can stop at
+    // the configured charge limit or when the battery is full, while USB is
+    // still connected to qFlipper or the RPC gateway.
+    if(furi_hal_power_is_usb_present()) {
+        FURI_LOG_D(TAG, "Auto power-off deferred while USB is present");
         power_start_auto_poweroff_timer(power);
     } else {
         power_off(power);
