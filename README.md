@@ -37,6 +37,9 @@ Start **Web Filesystem** on the T-Embed for Wi-Fi RPC functions. The gateway
 does not replace this firmware and does not add RF transmission or an arbitrary
 command endpoint; its Sub-GHz API remains receive-only.
 
+For setup, normal startup, qFlipper/WebFS operation, SD-card access, and
+troubleshooting, see the **[English user guide](docs/USER_GUIDE.md)**.
+
 ## ✨ New in v2 — written for this fork
 
 Added for the LilyGo T-Embed by [ElicoftZ](https://github.com/ElicoftZ). These are original
