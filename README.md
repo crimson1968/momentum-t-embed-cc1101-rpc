@@ -11,6 +11,35 @@
 
 A port of the [Flipper Zero](https://flipperzero.one/) firmware — with the **Momentum** feature set — to the **LilyGo T-Embed CC1101** and other ESP32 boards. It brings the Flipper Zero UI, services, and application framework to affordable ESP32 hardware — no Flipper Zero required.
 
+## Remote access: firmware and gateway
+
+This repository contains the **device firmware**. Its Web Filesystem service
+also exposes the versioned RPC API documented in
+[`docs/webfs-rpc.md`](docs/webfs-rpc.md): device status, capabilities,
+diagnostics, SD-card access, and receive-only Sub-GHz jobs.
+
+The companion
+[`RPC-Gateway_for_momentum-t-embed-cc1101-rpc`](https://github.com/crimson1968/RPC-Gateway_for_momentum-t-embed-cc1101-rpc)
+repository contains the **Docker gateway**. It translates the device API into
+MCP tools, provides a browser interface, and optionally uses USB for screen and
+button control. It is deployed on a trusted LAN; no OpenAI API key is needed.
+
+```text
+MCP client / browser
+        |
+        v
+Docker RPC Gateway  -- USB serial -->  T-Embed screen and buttons
+        |
+        +-- private-LAN HTTP ------->  Web Filesystem RPC in this firmware
+```
+
+Start **Web Filesystem** on the T-Embed for Wi-Fi RPC functions. The gateway
+does not replace this firmware and does not add RF transmission or an arbitrary
+command endpoint; its Sub-GHz API remains receive-only.
+
+For setup, normal startup, qFlipper/WebFS operation, SD-card access, and
+troubleshooting, see the **[English user guide](docs/USER_GUIDE.md)**.
+
 ## ✨ New in v2 — written for this fork
 
 Added for the LilyGo T-Embed by [ElicoftZ](https://github.com/ElicoftZ). These are original
