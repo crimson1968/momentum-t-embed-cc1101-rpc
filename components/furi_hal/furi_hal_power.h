@@ -29,6 +29,7 @@ uint8_t furi_hal_power_get_pct(void);
 uint8_t furi_hal_power_get_bat_health_pct(void);
 bool furi_hal_power_is_charging(void);
 bool furi_hal_power_is_charging_done(void);
+bool furi_hal_power_is_usb_present(void);
 
 void furi_hal_power_shutdown(void);
 void furi_hal_power_off(void);

@@ -211,7 +211,7 @@ static void furi_hal_power_ensure_initialized(void) {
     furi_hal_power.initialized = true;
 }
 
-static bool furi_hal_power_is_usb_present(void) {
+bool furi_hal_power_is_usb_present(void) {
     return furi_hal_power.last_supply_voltage >= FURI_HAL_POWER_USB_PRESENT_THRESHOLD_V;
 }
 
