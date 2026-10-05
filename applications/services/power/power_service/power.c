@@ -304,9 +304,18 @@ static void power_check_low_battery(Power* power) {
         return;
     }
 
+    // Trigger the shutdown warning either on the gauge's own critical-battery
+    // request, or when the user-configured percentage threshold is reached while
+    // running on the internal battery (not charging) -- e.g. an external
+    // powerbank has run empty and the internal cell is now draining.
+    const bool gauge_critical = power->info.is_shutdown_requested &&
+                                (power->info.voltage_vbus < POWER_VBUS_LOW_THRESHOLD);
+    const bool threshold_reached = (power->settings.shutdown_battery_percent > 0) &&
+                                   !power->info.is_charging &&
+                                   (power->info.charge <= power->settings.shutdown_battery_percent);
+
     // Check battery charge and vbus voltage
-    if((power->info.is_shutdown_requested) &&
-       (power->info.voltage_vbus < POWER_VBUS_LOW_THRESHOLD) && power->show_battery_low_warning) {
+    if((gauge_critical || threshold_reached) && power->show_battery_low_warning) {
         if(!power->battery_low) {
             view_holder_send_to_front(power->view_holder);
             view_holder_set_view(power->view_holder, power_off_get_view(power->view_power_off));
@@ -520,6 +529,36 @@ static void power_loader_callback(const void* message, void* context) {
     }
 }
 
+// callback for the absolute shutdown timer (activity-independent)
+static void power_shutdown_timer_callback(void* context) {
+    furi_assert(context);
+    Power* power = context;
+    // Unlike auto power-off, this fires from any state -- including with an app
+    // running or USB connected -- because the user asked for a hard time limit.
+    power_off(power);
+}
+
+// arm/re-arm or stop the absolute shutdown timer to match the current setting
+static void power_shutdown_timer_apply(Power* power) {
+    const uint32_t wanted_ms = power->settings.shutdown_timer_ms;
+    const bool running = furi_timer_is_running(power->shutdown_timer);
+
+    if(wanted_ms == 0) {
+        if(running) furi_timer_stop(power->shutdown_timer);
+        power->shutdown_timer_active_ms = 0;
+        return;
+    }
+
+    // Only (re)start when the configured duration changed, so saving an
+    // unrelated power setting does not restart the countdown.
+    if(running && power->shutdown_timer_active_ms == wanted_ms) {
+        return;
+    }
+    if(running) furi_timer_stop(power->shutdown_timer);
+    furi_timer_start(power->shutdown_timer, furi_ms_to_ticks(wanted_ms));
+    power->shutdown_timer_active_ms = wanted_ms;
+}
+
 // apply power settings
 static void power_settings_apply(Power* power) {
     //apply auto_poweroff settings
@@ -528,6 +567,8 @@ static void power_settings_apply(Power* power) {
     } else if(power_is_running_auto_poweroff_timer(power)) {
         power_auto_poweroff_disarm(power);
     }
+    // apply absolute shutdown timer (independent of activity and app state)
+    power_shutdown_timer_apply(power);
 }
 
 // do something depend from power queue message
@@ -707,6 +748,10 @@ static Power* power_alloc(void) {
     //define autopoweroff timer and they callback
     power->auto_poweroff_timer =
         furi_timer_alloc(power_auto_poweroff_timer_callback, FuriTimerTypeOnce, power);
+    //define absolute shutdown timer (fires regardless of activity/app state)
+    power->shutdown_timer =
+        furi_timer_alloc(power_shutdown_timer_callback, FuriTimerTypeOnce, power);
+    power->shutdown_timer_active_ms = 0;
 
     // Gui
     Gui* gui = furi_record_open(RECORD_GUI);
