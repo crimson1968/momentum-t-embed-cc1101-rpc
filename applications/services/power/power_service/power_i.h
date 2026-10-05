@@ -43,6 +43,10 @@ struct Power {
     FuriPubSub* input_events_pubsub;
     FuriPubSubSubscription* input_events_subscription;
     bool charge_is_supressed;
+    // Absolute (activity-independent) power-off timer and the duration it is
+    // currently armed for, so re-applying unrelated settings does not reset it.
+    FuriTimer* shutdown_timer;
+    uint32_t shutdown_timer_active_ms;
 };
 
 typedef enum {

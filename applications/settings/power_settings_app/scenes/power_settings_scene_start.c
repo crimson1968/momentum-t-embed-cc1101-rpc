@@ -21,6 +21,38 @@ const char* const charge_supress_percent_text[CHARGE_SUPRESS_PERCENT_COUNT] =
 
 const uint32_t charge_supress_percent_value[CHARGE_SUPRESS_PERCENT_COUNT] = {0, 90, 85, 80, 75, 70};
 
+#define SHUTDOWN_BATTERY_PERCENT_COUNT 6
+const char* const shutdown_battery_percent_text[SHUTDOWN_BATTERY_PERCENT_COUNT] =
+    {"OFF", "5%", "10%", "15%", "20%", "25%"};
+
+const uint32_t shutdown_battery_percent_value[SHUTDOWN_BATTERY_PERCENT_COUNT] =
+    {0, 5, 10, 15, 20, 25};
+
+#define SHUTDOWN_TIMER_COUNT 7
+const char* const shutdown_timer_text[SHUTDOWN_TIMER_COUNT] =
+    {"OFF", "15min", "30min", "1h", "2h", "4h", "8h"};
+
+const uint32_t shutdown_timer_value[SHUTDOWN_TIMER_COUNT] =
+    {0, 900000, 1800000, 3600000, 7200000, 14400000, 28800000};
+
+// power off when battery drops to/below the selected percentage (on battery)
+static void power_settings_scene_start_shutdown_battery_percent_changed(VariableItem* item) {
+    PowerSettingsApp* app = variable_item_get_context(item);
+    uint8_t index = variable_item_get_current_value_index(item);
+
+    variable_item_set_current_value_text(item, shutdown_battery_percent_text[index]);
+    app->settings.shutdown_battery_percent = shutdown_battery_percent_value[index];
+}
+
+// absolute power-off timer: shut down this long after boot, regardless of state
+static void power_settings_scene_start_shutdown_timer_changed(VariableItem* item) {
+    PowerSettingsApp* app = variable_item_get_context(item);
+    uint8_t index = variable_item_get_current_value_index(item);
+
+    variable_item_set_current_value_text(item, shutdown_timer_text[index]);
+    app->settings.shutdown_timer_ms = shutdown_timer_value[index];
+}
+
 // change variable_item_list visible text and charge_supress_percent_settings when user change item in variable_item_list
 static void power_settings_scene_start_charge_supress_percent_changed(VariableItem* item) {
     PowerSettingsApp* app = variable_item_get_context(item);
@@ -84,6 +116,32 @@ void power_settings_scene_start_on_enter(void* context) {
         CHARGE_SUPRESS_PERCENT_COUNT);
     variable_item_set_current_value_index(item, value_index);
     variable_item_set_current_value_text(item, charge_supress_percent_text[value_index]);
+
+    item = variable_item_list_add(
+        variable_item_list,
+        "Low Batt Off",
+        SHUTDOWN_BATTERY_PERCENT_COUNT,
+        power_settings_scene_start_shutdown_battery_percent_changed,
+        app);
+
+    value_index = value_index_uint32(
+        app->settings.shutdown_battery_percent,
+        shutdown_battery_percent_value,
+        SHUTDOWN_BATTERY_PERCENT_COUNT);
+    variable_item_set_current_value_index(item, value_index);
+    variable_item_set_current_value_text(item, shutdown_battery_percent_text[value_index]);
+
+    item = variable_item_list_add(
+        variable_item_list,
+        "Shutdown Timer",
+        SHUTDOWN_TIMER_COUNT,
+        power_settings_scene_start_shutdown_timer_changed,
+        app);
+
+    value_index = value_index_uint32(
+        app->settings.shutdown_timer_ms, shutdown_timer_value, SHUTDOWN_TIMER_COUNT);
+    variable_item_set_current_value_index(item, value_index);
+    variable_item_set_current_value_text(item, shutdown_timer_text[value_index]);
 
     variable_item_list_set_selected_item(
         variable_item_list,
