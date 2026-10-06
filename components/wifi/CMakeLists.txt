@@ -4,6 +4,7 @@ idf_component_register(
         "wlan_passwords.c"
         "wifi_settings.c"
         "wifi_service.c"
+        "wlan_remote.c"
     INCLUDE_DIRS "."
     REQUIRES
         furi
@@ -13,8 +14,10 @@ idf_component_register(
         nimble_glue
         gui
         esp_http_client
+        esp_http_server
         esp_wifi
         esp_netif
         esp_event
         lwip
+        rpc
 )

@@ -36,6 +36,7 @@ typedef enum {
     RpcOwnerBle,
     RpcOwnerUsb,
     RpcOwnerUart,
+    RpcOwnerWifi,
     RpcOwnerCount,
 } RpcOwner;
 
