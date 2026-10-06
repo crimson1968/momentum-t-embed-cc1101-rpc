@@ -46,6 +46,11 @@ void loader_start_detached_with_gui_error(
 bool loader_lock(Loader* instance);
 void loader_unlock(Loader* instance);
 bool loader_is_locked(Loader* instance);
+
+/** Send a signal (e.g. FuriSignalExit) to the currently running application's
+ * thread. Returns false if no application is running. Apps handle FuriSignalExit
+ * by default and exit, so this is the way to ask the foreground app to close. */
+bool loader_signal(Loader* instance, uint32_t signal, void* arg);
 void loader_show_menu(Loader* instance);
 /** Open the native loader menu directly on its Settings page. */
 void loader_show_settings(Loader* instance);

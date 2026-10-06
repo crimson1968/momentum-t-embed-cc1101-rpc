@@ -50,6 +50,20 @@ uint16_t wlan_remote_get_port(void);
 /* Number of currently connected remote clients (0 or 1 in this version). */
 uint8_t wlan_remote_get_client_count(void);
 
+/* Auto-recovery ("dead-man's switch"): when a remotely launched app seizes the
+ * Wi-Fi radio, the STA link (and this server) go down. If the connection stays
+ * lost while an app is running for longer than recovery_timeout_ms, and
+ * return_home is set, the foreground app is signalled to exit so the radio is
+ * freed, the home network reconnects, and the server re-binds -- bringing the
+ * device back under remote control. */
+typedef struct {
+    uint32_t recovery_timeout_ms; // 0 = off
+    bool return_home;
+} WlanRemoteSettings;
+
+void wlan_remote_get_settings(WlanRemoteSettings* out);
+void wlan_remote_set_settings(const WlanRemoteSettings* s);
+
 #ifdef __cplusplus
 }
 #endif

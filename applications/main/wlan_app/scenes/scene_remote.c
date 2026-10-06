@@ -18,6 +18,8 @@ static void remote_button_cb(GuiButtonType result, InputType type, void* context
         view_dispatcher_send_custom_event(app->view_dispatcher, WlanAppCustomEventRemoteStop);
     } else if(result == GuiButtonTypeLeft) {
         view_dispatcher_send_custom_event(app->view_dispatcher, WlanAppCustomEventRemoteSetToken);
+    } else if(result == GuiButtonTypeRight) {
+        view_dispatcher_send_custom_event(app->view_dispatcher, WlanAppCustomEventRemoteSetup);
     }
 }
 
@@ -59,6 +61,7 @@ static void remote_render(WlanApp* app) {
     widget_add_text_box_element(w, 0, 14, 128, 46, AlignLeft, AlignTop, body, false);
     widget_add_button_element(w, GuiButtonTypeLeft, "Token", remote_button_cb, app);
     widget_add_button_element(w, GuiButtonTypeCenter, "Stop", remote_button_cb, app);
+    widget_add_button_element(w, GuiButtonTypeRight, "Setup", remote_button_cb, app);
 }
 
 void wlan_app_scene_remote_on_enter(void* context) {
@@ -88,6 +91,9 @@ bool wlan_app_scene_remote_on_event(void* context, SceneManagerEvent event) {
             // A new token takes effect immediately for new connections; no
             // restart needed. Returning here re-renders with the new token.
             scene_manager_next_scene(app->scene_manager, WlanAppSceneRemoteToken);
+            consumed = true;
+        } else if(event.event == WlanAppCustomEventRemoteSetup) {
+            scene_manager_next_scene(app->scene_manager, WlanAppSceneRemoteSetup);
             consumed = true;
         }
     } else if(event.type == SceneManagerEventTypeTick) {

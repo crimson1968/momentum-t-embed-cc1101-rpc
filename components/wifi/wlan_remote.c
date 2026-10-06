@@ -5,7 +5,9 @@
 #include <furi_hal.h>
 #include <furi_hal_random.h>
 #include <storage/storage.h>
+#include <saved_struct.h>
 #include <rpc/rpc.h>
+#include <loader/loader.h>
 
 #include <esp_http_server.h>
 #include <esp_wifi.h>
@@ -43,6 +45,15 @@ static bool s_prev_user_enabled = false;
 static FuriTimer* s_monitor = NULL;
 static uint32_t s_ip_addr = 0;
 #define WLAN_REMOTE_MONITOR_MS (2000)
+
+/* Auto-recovery settings + state. s_recovery_deadline is the tick at which, if
+ * the connection is still down with an app running, we force the app to exit. */
+#define WLAN_REMOTE_SETTINGS_PATH  WLAN_REMOTE_TOKEN_DIR "/settings"
+#define WLAN_REMOTE_SETTINGS_MAGIC (0x57)
+#define WLAN_REMOTE_SETTINGS_VER   (1)
+static WlanRemoteSettings s_settings = {.recovery_timeout_ms = 0, .return_home = true};
+static bool s_settings_loaded = false;
+static uint32_t s_recovery_deadline = 0; // 0 = not armed
 
 /* Single active RPC session, guarded by s_lock against the httpd task (open on
  * GET, feed on frame, end on close) racing the RPC worker (send/terminate). */
@@ -151,6 +162,47 @@ static bool remote_request_token_ok(httpd_req_t* req) {
     }
     free(query);
     return ok;
+}
+
+/* ─────────────────────── settings ─────────────────────── */
+
+static void remote_settings_ensure_loaded(void) {
+    if(s_settings_loaded) return;
+    s_settings_loaded = true;
+    if(!saved_struct_load(
+           WLAN_REMOTE_SETTINGS_PATH,
+           &s_settings,
+           sizeof(s_settings),
+           WLAN_REMOTE_SETTINGS_MAGIC,
+           WLAN_REMOTE_SETTINGS_VER)) {
+        s_settings.recovery_timeout_ms = 0;
+        s_settings.return_home = true;
+    }
+}
+
+void wlan_remote_get_settings(WlanRemoteSettings* out) {
+    if(!out) return;
+    remote_settings_ensure_loaded();
+    *out = s_settings;
+}
+
+void wlan_remote_set_settings(const WlanRemoteSettings* s) {
+    if(!s) return;
+    s_settings = *s;
+    s_settings_loaded = true;
+    // Re-arm fresh against the new timeout.
+    s_recovery_deadline = 0;
+
+    Storage* storage = furi_record_open(RECORD_STORAGE);
+    storage_simply_mkdir(storage, "/ext/apps_data");
+    storage_simply_mkdir(storage, WLAN_REMOTE_TOKEN_DIR);
+    furi_record_close(RECORD_STORAGE);
+    saved_struct_save(
+        WLAN_REMOTE_SETTINGS_PATH,
+        &s_settings,
+        sizeof(s_settings),
+        WLAN_REMOTE_SETTINGS_MAGIC,
+        WLAN_REMOTE_SETTINGS_VER);
 }
 
 /* ─────────────────────── outbound: RPC -> WebSocket ─────────────────────── */
@@ -462,12 +514,26 @@ static void remote_set_ip(uint32_t ip) {
         (unsigned)((ip >> 24) & 0xff));
 }
 
-/* Periodic: keep the listener bound to the live STA connection. */
+/* Auto-recovery: a remotely launched app has seized the radio and the link has
+ * stayed down past the configured timeout -- signal the foreground app to exit
+ * so the radio frees, the home network reconnects and the server re-binds. */
+static void remote_recovery_trigger(void) {
+    Loader* loader = furi_record_open(RECORD_LOADER);
+    bool signalled = loader_signal(loader, FuriSignalExit, NULL);
+    furi_record_close(RECORD_LOADER);
+    FURI_LOG_I(TAG, "Wi-Fi Remote recovery: exit app signalled=%d", (int)signalled);
+    // Reconnect + re-bind happen via wlan_hal's background STA (pinned on in
+    // wlan_remote_start) and this monitor once the radio is free again.
+}
+
+/* Periodic: keep the listener bound to the live STA connection, and run the
+ * recovery dead-man's switch while the link is down. */
 static void remote_monitor_tick(void* ctx) {
     UNUSED(ctx);
     if(!s_running) return;
 
     if(wlan_hal_is_connected()) {
+        s_recovery_deadline = 0; // link is healthy; disarm recovery
         uint32_t ip = wlan_hal_get_own_ip();
         if(s_http == NULL || ip != s_ip_addr) {
             RemoteWorkerArgs a = {.result = false};
@@ -476,11 +542,34 @@ static void remote_monitor_tick(void* ctx) {
                 FURI_LOG_I(TAG, "Wi-Fi Remote (re)bound at %s", s_ip);
             }
         }
-    } else if(s_http) {
-        // STA dropped: drop the dead listener, keep serving state so the next
-        // reconnect re-binds automatically.
+        return;
+    }
+
+    // STA is down.
+    if(s_http) {
+        // Drop the dead listener; the next reconnect re-binds automatically.
         wlan_hal_run_in_worker(remote_httpd_stop_worker, NULL);
         FURI_LOG_I(TAG, "Wi-Fi Remote: STA down, server paused");
+    }
+
+    // Recovery only applies while an app is running (something seized the radio);
+    // a plain background drop just waits for the auto-reconnect.
+    remote_settings_ensure_loaded();
+    bool armed = s_settings.recovery_timeout_ms > 0 && s_settings.return_home;
+    Loader* loader = furi_record_open(RECORD_LOADER);
+    bool app_running = loader_is_locked(loader);
+    furi_record_close(RECORD_LOADER);
+
+    if(armed && app_running) {
+        uint32_t now = furi_get_tick();
+        if(s_recovery_deadline == 0) {
+            s_recovery_deadline = now + furi_ms_to_ticks(s_settings.recovery_timeout_ms);
+        } else if((int32_t)(now - s_recovery_deadline) >= 0) {
+            s_recovery_deadline = 0;
+            remote_recovery_trigger();
+        }
+    } else {
+        s_recovery_deadline = 0;
     }
 }
 
@@ -505,8 +594,10 @@ bool wlan_remote_start(void) {
     remote_set_ip(wlan_hal_get_own_ip());
 
     s_running = true;
+    s_recovery_deadline = 0;
+    remote_settings_ensure_loaded();
 
-    // Watch the STA connection and re-bind the listener after reconnects.
+    // Watch the STA connection, re-bind after reconnects, run recovery.
     if(!s_monitor) {
         s_monitor = furi_timer_alloc(remote_monitor_tick, FuriTimerTypePeriodic, NULL);
     }
