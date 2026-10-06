@@ -27,6 +27,7 @@ enum MainIndex {
     MainIndexSaveChannelSurvey = 22,
     MainIndexWifiStatus = 23,
     MainIndexRssiHistory = 24,
+    MainIndexWifiRemote = 25,
 };
 
 static uint16_t s_channel_counts[14];
@@ -296,6 +297,8 @@ void wlan_app_scene_main_on_enter(void* context) {
         app->submenu, "WiFi Status", MainIndexWifiStatus, wlan_app_scene_main_submenu_cb, app);
     submenu_add_item(
         app->submenu, "RSSI History", MainIndexRssiHistory, wlan_app_scene_main_submenu_cb, app);
+    submenu_add_item(
+        app->submenu, "Wi-Fi Remote", MainIndexWifiRemote, wlan_app_scene_main_submenu_cb, app);
 
     view_dispatcher_switch_to_view(app->view_dispatcher, WlanAppViewSubmenu);
 }
@@ -489,6 +492,10 @@ bool wlan_app_scene_main_on_event(void* context, SceneManagerEvent event) {
             } else {
                 scene_manager_next_scene(app->scene_manager, WlanAppSceneWebFsMenu);
             }
+            consumed = true;
+            break;
+        case MainIndexWifiRemote:
+            scene_manager_next_scene(app->scene_manager, WlanAppSceneRemote);
             consumed = true;
             break;
         }

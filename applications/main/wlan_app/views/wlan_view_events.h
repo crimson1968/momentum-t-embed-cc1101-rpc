@@ -92,4 +92,8 @@ typedef enum {
 
     WlanAppCustomEventAndroidTvPinDone = 260,
     WlanAppCustomEventAndroidTvRetry = 261,
+
+    WlanAppCustomEventRemoteStop = 270,
+    WlanAppCustomEventRemoteSetToken = 271,
+    WlanAppCustomEventRemoteTokenEntered = 272,
 } WlanAppCustomEvent;
