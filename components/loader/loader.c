@@ -464,6 +464,18 @@ static bool loader_do_is_locked(Loader* loader) {
     return loader->app.thread != NULL;
 }
 
+bool loader_signal(Loader* loader, uint32_t signal, void* arg) {
+    furi_check(loader);
+    FuriThread* thread = loader->app.thread;
+    // Skip when idle, or while the loader is tearing the app down (the thread
+    // handle is set to a sentinel before it is freed, so this never touches a
+    // dangling pointer).
+    if(thread == NULL || thread == (FuriThread*)LOADER_MAGIC_THREAD_VALUE) {
+        return false;
+    }
+    return furi_thread_signal(thread, signal, arg);
+}
+
 /** True for the Dual Boot app by menu name or by .fap path, since it can be
  * reached either way. */
 static bool loader_name_is_dualboot(const char* name) {

@@ -96,4 +96,5 @@ typedef enum {
     WlanAppCustomEventRemoteStop = 270,
     WlanAppCustomEventRemoteSetToken = 271,
     WlanAppCustomEventRemoteTokenEntered = 272,
+    WlanAppCustomEventRemoteSetup = 273,
 } WlanAppCustomEvent;
