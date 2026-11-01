@@ -2,9 +2,27 @@
 
 #include <string.h>
 #include <stddef.h>
+#include <furi.h>
 #include <furi_hal_bt.h>
 #include <furi_hal_power.h>
 #include <flipper_format/flipper_format.h>
+#include <btshim.h>
+#include <wifi.h>
+
+#define TAG "FindMy"
+
+// Time to wait for the BLE host to sync after bringing the radio up.
+#define FINDMY_BLE_SYNC_TRIES   40
+#define FINDMY_BLE_SYNC_STEP_MS 50
+
+// Radio-handback bookkeeping. On this port BT and WiFi share one radio, so
+// activating the beacon may switch the radio from WiFi into BT mode. Remember
+// whether FindMy itself performed that switch (and whether WiFi was the prior
+// owner) so that turning the beacon off restores exactly the previous state:
+// WiFi back on if it was on before, otherwise just release BT; and if the
+// device was already in BT mode, leave it untouched. Lives for the session.
+static bool s_findmy_switched_radio = false;
+static bool s_findmy_restore_wifi = false;
 
 bool findmy_state_load(FindMyState* out_state) {
     FindMyState state;
@@ -113,11 +131,66 @@ static void findmy_state_update_payload_battery(FindMyState* state) {
 }
 
 void findmy_state_apply(FindMyState* state) {
-    // This function applies configured state to the beacon (loaded values)
+    // This function applies configured state to the beacon (loaded values).
+    //
+    // IMPORTANT: none of the BLE operations below may use furi_check(). On this
+    // port BT and WiFi share one radio and BT is off by default, so a beacon
+    // call can legitimately fail (e.g. the BLE host is not up). Asserting here
+    // bricked the device into a boot loop whenever a saved-active beacon was
+    // loaded on a boot with BT disabled. Failures are now logged and skipped.
 
-    // Stop beacon before configuring
+    if(!furi_hal_bt_is_available()) {
+        FURI_LOG_W(TAG, "No BLE radio on this board; beacon unavailable");
+        return;
+    }
+
+    // --- Beacon being turned OFF: stop it and hand the radio back ---
+    if(!state->beacon_active) {
+        if(furi_hal_bt_extra_beacon_is_active()) {
+            furi_hal_bt_extra_beacon_stop();
+        }
+        // Restore the previous radio owner only if FindMy was the one that
+        // switched it. If the device was already in BT mode, leave it as-is.
+        if(s_findmy_switched_radio) {
+            if(s_findmy_restore_wifi) {
+                // WiFi was on before: wifi_enable() turns BLE off and brings
+                // WiFi back up (and reconnects to the last SSID).
+                Wifi* wifi = furi_record_open(RECORD_WIFI);
+                wifi_enable(wifi);
+                furi_record_close(RECORD_WIFI);
+            } else {
+                // No prior radio owner: just release the BT stack back to idle.
+                Bt* bt = furi_record_open(RECORD_BT);
+                bt_stop_stack(bt);
+                furi_record_close(RECORD_BT);
+            }
+            s_findmy_switched_radio = false;
+            s_findmy_restore_wifi = false;
+        }
+        return;
+    }
+
+    // --- Beacon being turned ON ---
+    // To actually broadcast we need the BLE host running. Bring the radio into
+    // BT mode if it isn't already, remembering the prior owner so turning the
+    // beacon off can restore it. If BT was already enabled by the user, don't
+    // claim ownership (so we never tear BT down afterwards).
+    Bt* bt = furi_record_open(RECORD_BT);
+    if(!s_findmy_switched_radio && !bt_is_enabled(bt)) {
+        Wifi* wifi = furi_record_open(RECORD_WIFI);
+        s_findmy_restore_wifi = wifi_is_enabled(wifi);
+        if(s_findmy_restore_wifi) {
+            wifi_disable(wifi); // free the shared radio for BT
+        }
+        furi_record_close(RECORD_WIFI);
+        s_findmy_switched_radio = true;
+    }
+    bt_start_stack(bt); // idempotent: no-op if the stack is already running
+    furi_record_close(RECORD_BT);
+
+    // Stop beacon before (re)configuring; best effort, never fatal.
     if(furi_hal_bt_extra_beacon_is_active()) {
-        furi_check(furi_hal_bt_extra_beacon_stop());
+        furi_hal_bt_extra_beacon_stop();
     }
 
     // Make config struct from configured parameters and set it
@@ -129,16 +202,31 @@ void findmy_state_apply(FindMyState* state) {
         .address_type = GapAddressTypePublic,
     };
     memcpy(config.address, state->mac, sizeof(config.address));
-    furi_check(furi_hal_bt_extra_beacon_set_config(&config));
+    if(!furi_hal_bt_extra_beacon_set_config(&config)) {
+        FURI_LOG_E(TAG, "Beacon set_config failed");
+        return;
+    }
 
     // Update data payload with battery level and set it
     findmy_state_update_payload_battery(state);
-    furi_check(
-        furi_hal_bt_extra_beacon_set_data(state->data, findmy_state_data_size(state->tag_type)));
+    if(!furi_hal_bt_extra_beacon_set_data(
+           state->data, findmy_state_data_size(state->tag_type))) {
+        FURI_LOG_E(TAG, "Beacon set_data failed");
+        return;
+    }
 
-    // Start beacon if configured
-    if(state->beacon_active) {
-        furi_check(furi_hal_bt_extra_beacon_start());
+    // Start beacon. The BLE host may need a moment to finish syncing after
+    // bt_start_stack(), so retry briefly instead of asserting.
+    bool started = false;
+    for(int i = 0; i < FINDMY_BLE_SYNC_TRIES; i++) {
+        if(furi_hal_bt_extra_beacon_start()) {
+            started = true;
+            break;
+        }
+        furi_delay_ms(FINDMY_BLE_SYNC_STEP_MS);
+    }
+    if(!started) {
+        FURI_LOG_E(TAG, "Beacon start failed (BLE host not ready / radio in use by WiFi?)");
     }
 }
 
